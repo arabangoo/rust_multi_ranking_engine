@@ -1,0 +1,47 @@
+[package]
+name        = "rust_multi_ranking_engine"
+version     = "0.1.0"
+edition     = "2021"
+license     = "Apache-2.0"
+description = "Scale-safe multi-axis score fusion and auditable top-K selection under set constraints. Pure Rust, deterministic, no models."
+repository  = "https://github.com/arabangoo/rust_multi_ranking_engine"
+readme      = "README.md"
+keywords    = ["ranking", "fusion", "rrf", "submodular", "selection"]
+categories  = ["algorithms", "data-structures"]
+# 기본 빌드가 실제로 요구하는 최소 버전. thiserror 2 의 1.71 과
+# f32::total_cmp(1.62) 중 높은 쪽이 상한이다.
+rust-version = "1.71"
+
+# ── 독립성 원칙(README 3절·13절) ─────────────────────────────────
+# 기본 빌드 = pure Rust / zero FFI / zero subprocess / zero network.
+# 모델도 없고 신경망 추론 런타임도 링크하지 않는다.
+
+[lib]
+name = "rust_multi_ranking_engine"
+# rlib: 일반 Rust 소비자·테스트용, cdylib: 단계 7 의 PyO3 확장 모듈용
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# 코어(타입·트레잇·유계 힙·융합·제약·목적함수·예산·감사 출력)는 항상 빌드된다.
+# 감사 JSON 은 의존성 없이 직접 쓴다 -- serde 는 소비자 편의용 옵트인이다.
+default = []
+
+# 공개 타입에 Serialize/Deserialize 를 유도한다. 감사 출력 자체는 이 기능 없이도 나온다.
+serde = ["dep:serde"]
+
+# 2단계 풀 위에서 비싼 채점기를 병렬 실행한다. 융합은 여전히 후보 식별자 순
+# 고정 순서라 결정성 불변식은 이 기능의 켜짐 여부와 무관하게 성립한다.
+parallel = ["dep:rayon"]
+
+[dependencies]
+thiserror = "2"
+
+# ── 직렬화 유도 (feature = "serde") ─────────────────────────────
+serde = { version = "1", optional = true, features = ["derive"] }
+
+# ── 병렬 채점 (feature = "parallel") ────────────────────────────
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+# 없음. 무작위 불변식 검사는 고정 시드 선형 합동 생성기를 직접 넣는다
+# (형제 레포 rust_pii_transformer 와 같은 이유 -- 개발 의존성도 0 으로 둔다).
