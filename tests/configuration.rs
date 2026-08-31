@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{authority, corpus, relevance, Doc, Expensive, Unbounded, Unit};
+use common::{authority, corpus, relevance, Batched, Doc, Expensive, Unbounded, Unit};
 use rust_multi_ranking_engine::{
     Budget, Engine, Error, Fusion, MissingPolicy, Normalizer, ScoreScale, ScorerExt, ScorerId,
 };
@@ -286,4 +286,97 @@ fn the_trace_shows_the_cascade_actually_saved_calls() {
     assert_eq!(expensive.calls, 16, "비싼 축은 K 곱하기 4 인 풀에만 돈다");
     assert_eq!(out.trace.pool_capacity, 16);
     assert_eq!(out.trace.input_count, 1000);
+}
+
+// ── 배치 채점 ─────────────────────────────────────────────────────
+
+/// 비싼 축은 배치로 넘어간다. 하나씩 960번이 아니라 한 번에 풀 전체다.
+///
+/// 이것이 파이썬 콜백이 쓰는 경로이고, 교차 인코더 같은 배치 추론 모델이 실제로
+/// 원하는 모양이다.
+#[test]
+fn an_expensive_axis_is_handed_the_whole_pool_at_once() {
+    use std::sync::atomic::Ordering;
+
+    let scorer = std::sync::Arc::new(Batched::new("cross_encoder"));
+    let handle = std::sync::Arc::clone(&scorer);
+
+    struct Shared(std::sync::Arc<Batched>);
+    impl rust_multi_ranking_engine::Scorer<Doc> for Shared {
+        fn id(&self) -> ScorerId {
+            self.0.id()
+        }
+        fn scale(&self) -> rust_multi_ranking_engine::ScoreScale {
+            self.0.scale()
+        }
+        fn cost(&self) -> rust_multi_ranking_engine::ScorerCost {
+            self.0.cost()
+        }
+        fn score(&self, d: &Doc) -> Option<f32> {
+            self.0.score(d)
+        }
+        fn score_batch(&self, cs: &[&Doc]) -> Vec<Option<f32>> {
+            self.0.score_batch(cs)
+        }
+    }
+
+    let out = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .scorer(Shared(scorer))
+        .fuse(Fusion::weighted_sum())
+        .budget(Budget::TopK(4))
+        .pool_multiplier(4)
+        .run(corpus(9, 1000))
+        .unwrap();
+
+    // 풀은 16 개. 배치가 한 번에 16 개를 받아야 한다.
+    assert_eq!(out.trace.pool_capacity, 16);
+    assert_eq!(handle.widest.load(Ordering::SeqCst), 16);
+    // 직렬 빌드는 한 번, 병렬 빌드는 덩어리 수만큼 부른다. 어느 쪽이든 1,000 번이 아니다.
+    let calls = handle.calls.load(Ordering::SeqCst);
+    assert!((1..=16).contains(&calls), "배치 호출 {calls} 회");
+    assert_eq!(out.trace.scorers[1].calls, 16, "기록에는 후보 수로 남는다");
+}
+
+/// 배치 결과의 길이가 어긋나면 조용히 쓰지 않고 멈춘다.
+///
+/// 순수 러스트에서는 잘 나지 않지만 파이썬 콜백에서는 실제로 생기는 실패다.
+#[test]
+fn a_batch_result_of_the_wrong_length_is_an_error() {
+    let err = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .scorer(Batched::broken("cross_encoder"))
+        .fuse(Fusion::weighted_sum())
+        .budget(Budget::TopK(2))
+        .pool_multiplier(4)
+        .run(corpus(9, 100))
+        .unwrap_err();
+
+    match err {
+        Error::BatchLengthMismatch {
+            scorer,
+            expected,
+            got,
+        } => {
+            assert_eq!(scorer, ScorerId::new("cross_encoder"));
+            assert_eq!(expected, got + 1);
+        }
+        other => panic!("다른 오류가 났다: {other}"),
+    }
+}
+
+/// 기본 구현을 쓰는 채점기는 아무것도 바뀌지 않는다.
+#[test]
+fn a_scorer_without_a_batch_override_behaves_as_before() {
+    let out = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .scorer(Expensive("cross", |d| Some(d.authority)))
+        .fuse(Fusion::weighted_sum())
+        .budget(Budget::TopK(3))
+        .pool_multiplier(4)
+        .run(corpus(9, 500))
+        .unwrap();
+
+    assert_eq!(out.trace.scorers[1].calls, 12);
+    assert!(out.is_complete());
 }

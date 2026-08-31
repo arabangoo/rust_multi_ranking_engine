@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rust_multi_ranking_engine"
+description = "Scale-safe multi-axis score fusion and auditable top-K selection under set constraints. Pure Rust, deterministic, no models, no network."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+authors = [{ name = "rust_multi_ranking_engine contributors" }]
+keywords = ["ranking", "fusion", "rrf", "rag", "reranking", "submodular", "selection"]
+classifiers = [
+    # 여섯 단계가 다 돌지만 실세계 데이터 검증이 없으므로 아직 Alpha 로 둔다.
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+]
+# version 은 Cargo.toml 의 package.version 에서 자동으로 가져온다 (dynamic).
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/arabangoo/rust_multi_ranking_engine"
+
+[tool.maturin]
+# Rust 의 #[pymodule] 함수명 = cdylib 이름과 일치해야 한다.
+module-name = "rust_multi_ranking_engine"
+# Python 바인딩(cdylib) 활성 feature. 코어는 default 로 항상 빌드된다.
+#
+# parallel 은 켜지 않는다. 비싼 축 콜백이 파이썬 함수라 여러 스레드에서 불러 봐야
+# 전역 인터프리터 잠금이 직렬화한다. 얻는 것 없이 복잡도만 는다.
+features = ["python"]
+# abi3(안정 이진 인터페이스) 휠 → Python 3.9 이상에서 휠 하나로 돈다.

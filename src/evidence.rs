@@ -27,7 +27,7 @@ pub struct Ranked<C> {
     pub fusion: FusionTrace,
     /// 이 후보가 통과한 집합 제약들.
     ///
-    /// 설계서의 `Ranked` 에는 없었지만 README 10절의 감사 출력 예시가
+    /// 설계서의 `Ranked` 에는 없었지만 감사 출력 예시가
     /// `"constraints": { "max_per_source": "pass" }` 를 요구하므로 근거를 실어 둔다.
     pub constraints: Vec<ConstraintId>,
 }
@@ -188,7 +188,7 @@ impl RejectReason {
 ///
 /// # 설계서에서 달라진 점
 ///
-/// README 3절은 "모든 후보는 결과에 들어가거나 사유와 함께 기록된다"고 적었고 2절은
+/// 설계서는 "모든 후보는 결과에 들어가거나 사유와 함께 기록된다"고 적었고 다른 자리에서는
 /// "후보를 전부 메모리에 올리지 않는 것"이 더 중요하다고 적었다. 후보가 1,000만이면
 /// 둘은 그대로 충돌한다.
 ///

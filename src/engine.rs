@@ -397,7 +397,7 @@ impl<C: Candidate + Sync> Engine<C> {
             .collect();
 
         // ── 2단계: 풀 위에서 ──────────────────────────────────────
-        self.score_expensive(&mut staged, &mut stats);
+        self.score_expensive(&mut staged, &mut stats)?;
 
         let mut survivors: Vec<Staged<C>> = Vec::with_capacity(staged.len());
         for s in staged {
@@ -657,43 +657,90 @@ impl<C: Candidate + Sync> Engine<C> {
         }
     }
 
+    /// 비싼 축을 2단계 풀에만 돌린다.
+    ///
+    /// 후보 하나씩이 아니라 [`Scorer::score_batch`] 로 넘긴다. 기본 구현은 그대로 하나씩
+    /// 부르지만, 배치 추론을 쓰는 채점기는 이 한 번의 호출로 풀 전체를 처리할 수 있다.
     #[cfg(not(feature = "parallel"))]
-    fn score_expensive(&self, staged: &mut [Staged<C>], stats: &mut [ScorerTrace]) {
-        for (i, m) in self.meta.iter().enumerate() {
-            if m.cost != ScorerCost::Expensive {
-                continue;
+    fn score_expensive(&self, staged: &mut [Staged<C>], stats: &mut [ScorerTrace]) -> Result<()> {
+        // 채점을 먼저 다 받아 두고 나서 쓴다. 배치 호출이 후보를 빌려 보는 동안에는
+        // 결과를 되돌려 쓸 수 없기 때문이다.
+        let mut collected: Vec<(usize, Vec<Option<f32>>, u128)> = Vec::new();
+        {
+            let refs: Vec<&C> = staged.iter().map(|s| &s.candidate).collect();
+            for (i, m) in self.meta.iter().enumerate() {
+                if m.cost != ScorerCost::Expensive {
+                    continue;
+                }
+                let start = Instant::now();
+                let values = self.scorers[i].score_batch(&refs);
+                self.check_batch(&m.id, refs.len(), values.len())?;
+                collected.push((i, values, start.elapsed().as_nanos()));
             }
-            let start = Instant::now();
-            for s in staged.iter_mut() {
-                s.scores[i] = sanitize(self.scorers[i].score(&s.candidate));
+        }
+        self.absorb(staged, stats, collected);
+        Ok(())
+    }
+
+    /// 병렬 채점. 풀을 덩어리로 나눠 배치 호출을 동시에 돌리고 색인 순서로 다시 모으므로
+    /// 결정성은 유지된다. 덩어리 하나가 곧 배치 하나라, 배치 추론을 쓰는 채점기에도 맞는다.
+    #[cfg(feature = "parallel")]
+    fn score_expensive(&self, staged: &mut [Staged<C>], stats: &mut [ScorerTrace]) -> Result<()> {
+        use rayon::prelude::*;
+
+        let mut collected: Vec<(usize, Vec<Option<f32>>, u128)> = Vec::new();
+        {
+            let refs: Vec<&C> = staged.iter().map(|s| &s.candidate).collect();
+            // usize::div_ceil 은 1.73 부터라 선언한 최소 버전(1.71)에서 못 쓴다.
+            let threads = rayon::current_num_threads().max(1);
+            let chunk = ((refs.len() + threads - 1) / threads).max(1);
+
+            for (i, m) in self.meta.iter().enumerate() {
+                if m.cost != ScorerCost::Expensive {
+                    continue;
+                }
+                let start = Instant::now();
+                let scorer = &self.scorers[i];
+                let chunks: Vec<Vec<Option<f32>>> = refs
+                    .par_chunks(chunk)
+                    .map(|part| scorer.score_batch(part))
+                    .collect();
+                let values: Vec<Option<f32>> = chunks.into_iter().flatten().collect();
+                self.check_batch(&m.id, refs.len(), values.len())?;
+                collected.push((i, values, start.elapsed().as_nanos()));
             }
-            stats[i].elapsed_nanos += start.elapsed().as_nanos();
+        }
+        self.absorb(staged, stats, collected);
+        Ok(())
+    }
+
+    /// 받아 둔 배치 결과를 풀에 써넣고 기록을 갱신한다.
+    fn absorb(
+        &self,
+        staged: &mut [Staged<C>],
+        stats: &mut [ScorerTrace],
+        collected: Vec<(usize, Vec<Option<f32>>, u128)>,
+    ) {
+        for (i, values, elapsed) in collected {
+            for (s, v) in staged.iter_mut().zip(values) {
+                s.scores[i] = sanitize(v);
+            }
+            stats[i].elapsed_nanos += elapsed;
             stats[i].calls += staged.len() as u64;
             stats[i].missing += staged.iter().filter(|s| s.scores[i].is_none()).count() as u64;
         }
     }
 
-    /// 병렬 채점. 결과를 색인 순서로 다시 모으므로 결정성은 유지된다.
-    #[cfg(feature = "parallel")]
-    fn score_expensive(&self, staged: &mut [Staged<C>], stats: &mut [ScorerTrace]) {
-        use rayon::prelude::*;
-
-        for (i, m) in self.meta.iter().enumerate() {
-            if m.cost != ScorerCost::Expensive {
-                continue;
-            }
-            let start = Instant::now();
-            let scorer = &self.scorers[i];
-            let values: Vec<Option<f32>> = staged
-                .par_iter()
-                .map(|s| sanitize(scorer.score(&s.candidate)))
-                .collect();
-            for (s, v) in staged.iter_mut().zip(values) {
-                s.scores[i] = v;
-            }
-            stats[i].elapsed_nanos += start.elapsed().as_nanos();
-            stats[i].calls += staged.len() as u64;
-            stats[i].missing += staged.iter().filter(|s| s.scores[i].is_none()).count() as u64;
+    /// 배치 결과의 길이가 입력과 같은지 본다. 어긋나면 조용히 쓰지 않고 멈춘다.
+    fn check_batch(&self, scorer: &ScorerId, expected: usize, got: usize) -> Result<()> {
+        if expected == got {
+            Ok(())
+        } else {
+            Err(Error::BatchLengthMismatch {
+                scorer: scorer.clone(),
+                expected,
+                got,
+            })
         }
     }
 

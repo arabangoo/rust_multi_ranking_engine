@@ -133,6 +133,9 @@ pub mod score;
 
 mod select;
 
+#[cfg(feature = "python")]
+mod python;
+
 pub use budget::{tail_mass, Budget, BudgetTrace, FallbackReason, DEFAULT_MIN_FIT};
 pub use candidate::{Candidate, CandidateId};
 pub use constraint::{

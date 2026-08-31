@@ -26,7 +26,7 @@ pub enum Budget {
     ///
     /// # 설계서에서 달라진 점
     ///
-    /// README 9절의 `TailMass { epsilon }` 에는 되돌아갈 K 가 없었다. "고정 K 로
+    /// 설계서의 `TailMass { epsilon }` 에는 되돌아갈 K 가 없었다. "고정 K 로
     /// 되돌린다"는 문장이 성립하려면 그 K 를 받아야 하므로 `fallback_k` 를 더했다.
     TailMass {
         /// 허용 누락 질량. 0 초과 1 미만.

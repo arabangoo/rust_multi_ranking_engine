@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use rust_multi_ranking_engine::{
     Candidate, CandidateId, Outcome, ScoreScale, Scorer, ScorerCost, ScorerId,
 };
@@ -75,6 +77,59 @@ impl Scorer<Doc> for Expensive {
     }
     fn score(&self, d: &Doc) -> Option<f32> {
         (self.1)(d)
+    }
+}
+
+/// 배치로 채점하는 비싼 축. 몇 번 불렸고 한 번에 몇 개를 받았는지 센다.
+///
+/// 파이썬 콜백이 이 모양이다. 하나씩 960번이 아니라 한 번에 960개를 받는다.
+pub struct Batched {
+    pub name: &'static str,
+    pub calls: AtomicUsize,
+    pub widest: AtomicUsize,
+    /// 참이면 일부러 길이가 어긋난 결과를 돌려준다.
+    pub broken: bool,
+}
+
+impl Batched {
+    pub fn new(name: &'static str) -> Self {
+        Batched {
+            name,
+            calls: AtomicUsize::new(0),
+            widest: AtomicUsize::new(0),
+            broken: false,
+        }
+    }
+
+    pub fn broken(name: &'static str) -> Self {
+        Batched {
+            broken: true,
+            ..Batched::new(name)
+        }
+    }
+}
+
+impl Scorer<Doc> for Batched {
+    fn id(&self) -> ScorerId {
+        ScorerId::new(self.name)
+    }
+    fn scale(&self) -> ScoreScale {
+        ScoreScale::Unit
+    }
+    fn cost(&self) -> ScorerCost {
+        ScorerCost::Expensive
+    }
+    fn score(&self, d: &Doc) -> Option<f32> {
+        Some(d.authority)
+    }
+    fn score_batch(&self, candidates: &[&Doc]) -> Vec<Option<f32>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.widest.fetch_max(candidates.len(), Ordering::SeqCst);
+        let mut out: Vec<Option<f32>> = candidates.iter().map(|d| Some(d.authority)).collect();
+        if self.broken {
+            out.pop();
+        }
+        out
     }
 }
 

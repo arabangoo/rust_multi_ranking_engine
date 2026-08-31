@@ -76,7 +76,7 @@ pub trait SetConstraint<C>: Sync {
 ///
 /// # 설계서에서 달라진 점
 ///
-/// README 8절은 `require_at_least` 를 기본 제공 [`SetConstraint`] 로 적었는데, 그 자리에
+/// 설계서는 `require_at_least` 를 기본 제공 [`SetConstraint`] 로 적었는데, 그 자리에
 /// 넣으면 아무 일도 하지 않는다. `admits` 는 "이것을 더해도 되는가"를 묻는 술어라
 /// **더하는 것을 막는 상한**만 표현할 수 있고, 하한은 항상 참을 돌려주게 되기 때문이다.
 /// 그래서 별도 개념으로 분리했다.

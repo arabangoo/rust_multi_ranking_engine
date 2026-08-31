@@ -33,6 +33,12 @@ serde = ["dep:serde"]
 # 고정 순서라 결정성 불변식은 이 기능의 켜짐 여부와 무관하게 성립한다.
 parallel = ["dep:rayon"]
 
+# Python 바인딩(PyO3 cdylib). abi3 휠이라 Python 3.9 이상에서 휠 하나로 돈다.
+#
+# ⚠️ 이 기능만 최소 러스트 버전이 다르다. PyO3 0.29 가 1.83 이상을 요구한다.
+# 코어는 여전히 1.71 에서 빌드되므로 러스트 소비자를 그 버전으로 끌어올리지 않는다.
+python = ["dep:pyo3"]
+
 [dependencies]
 thiserror = "2"
 
@@ -41,6 +47,9 @@ serde = { version = "1", optional = true, features = ["derive"] }
 
 # ── 병렬 채점 (feature = "parallel") ────────────────────────────
 rayon = { version = "1", optional = true }
+
+# ── Python 바인딩 (feature = "python") ──────────────────────────
+pyo3 = { version = "0.29", optional = true, features = ["extension-module", "abi3-py39"] }
 
 [dev-dependencies]
 # 없음. 무작위 불변식 검사는 고정 시드 선형 합동 생성기를 직접 넣는다
