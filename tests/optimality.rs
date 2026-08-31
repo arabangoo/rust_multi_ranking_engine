@@ -10,7 +10,8 @@ use std::collections::HashSet;
 
 use common::{relevance, Doc, Unit};
 use rust_multi_ranking_engine::{
-    constraint, Budget, Coverage, Engine, Fusion, Outcome, GUARANTEE_CARDINALITY, GUARANTEE_MATROID,
+    constraint, Budget, Coverage, Engine, Fusion, Outcome, GUARANTEE_CARDINALITY,
+    GUARANTEE_KNAPSACK_MODULAR, GUARANTEE_KNAPSACK_SUBMODULAR, GUARANTEE_MATROID,
 };
 
 /// 결정적인 소규모 코퍼스. 무작위가 아니라 손으로 짠 것이라 실패가 언제나 같다.
@@ -272,4 +273,153 @@ fn a_tight_pool_multiplier_shows_up_as_out_of_pool_rejections() {
     assert_eq!(out.selection.pool_size, 2);
     assert_eq!(out.rejected_counts.out_of_pool, 10);
     assert!(out.is_complete());
+}
+
+// ── 보장 계수의 출처 ──────────────────────────────────────────────
+
+/// 상수 넷을 출처가 말하는 값에 못박는다.
+///
+/// 이 테스트가 있는 이유는 실제 사고 때문이다. 서브모듈러 배낭 계수가 한때
+/// `1 - e^(-1/2)`(약 0.393)로 박혀 있었는데 출처를 댈 수 없는 값이었고, 실제 보장인
+/// `(1 - 1/e)/2`(약 0.316)보다 **높았다.** 보장을 실제보다 후하게 보고하는 것은
+/// 근거 없는 숫자를 결과에 싣지 않는다는 이 엔진의 원칙을 정면으로 어기는 일이다.
+///
+/// 값을 바꾸려면 어느 정리가 그 값을 주는지 먼저 댈 수 있어야 한다.
+#[test]
+fn the_guarantee_constants_match_their_sources() {
+    // Nemhauser, Wolsey, Fisher (1978). 서브모듈러 + 개수 제한.
+    assert!(
+        (GUARANTEE_CARDINALITY - (1.0 - 1.0 / std::f32::consts::E)).abs() < 1e-6,
+        "1 - 1/e 가 아니다: {GUARANTEE_CARDINALITY}"
+    );
+
+    // Fisher, Nemhauser, Wolsey (1978, 두 번째 논문). 서브모듈러 + 매트로이드 하나.
+    assert_eq!(GUARANTEE_MATROID, 0.5);
+
+    // ModifiedGreedy. 모듈러 + 배낭형.
+    assert_eq!(GUARANTEE_KNAPSACK_MODULAR, 0.5);
+
+    // Leskovec et al. (2007). 서브모듈러 + 배낭형, 열거 없는 단순 탐욕.
+    assert!(
+        (GUARANTEE_KNAPSACK_SUBMODULAR - (1.0 - 1.0 / std::f32::consts::E) / 2.0).abs() < 1e-6,
+        "(1 - 1/e)/2 가 아니다: {GUARANTEE_KNAPSACK_SUBMODULAR}"
+    );
+}
+
+/// 열거 변종의 `1 - 1/e` 를 배낭형 계수로 쓰면 안 된다. 이 엔진은 그 알고리즘을 돌리지
+/// 않는다. 컴파일 시점에 막으므로 이 관계가 깨지면 빌드가 안 된다.
+const _: () = assert!(GUARANTEE_KNAPSACK_SUBMODULAR < GUARANTEE_CARDINALITY);
+
+/// 예산 안에서 값이 가장 큰 부분집합. 크기를 고정하지 않는다.
+fn brute_force_knapsack(docs: &[Doc], limit: u32, with_coverage: bool) -> f32 {
+    let n = docs.len();
+    let mut best = 0.0f32;
+    for mask in 0u32..(1 << n) {
+        let set: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
+        let cost: u32 = set.iter().map(|i| docs[*i].tokens).sum();
+        if cost > limit {
+            continue;
+        }
+        best = best.max(value(docs, &set, with_coverage));
+    }
+    best
+}
+
+/// 서브모듈러 + 배낭형에서 약속한 계수를 실제로 지키는지 최적해와 직접 비교한다.
+#[test]
+fn the_knapsack_guarantee_holds_against_the_true_optimum() {
+    let mut docs = small();
+    // 비용을 흩뜨려 비율 탐욕과 단위비용 탐욕이 서로 다른 답을 내게 만든다.
+    for (i, d) in docs.iter_mut().enumerate() {
+        d.tokens = 1 + (i as u32 * 7) % 9;
+    }
+
+    let out = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .fuse(Fusion::weighted_sum())
+        .objective(Coverage::new(|d: &Doc| d.topics.clone()))
+        .budget(Budget::Tokens { max: 20 })
+        .cost(|d: &Doc| d.tokens)
+        .pool_multiplier(4)
+        .run(docs.clone())
+        .unwrap();
+
+    assert_eq!(out.selection.guarantee, Some(GUARANTEE_KNAPSACK_SUBMODULAR));
+
+    let ids: Vec<usize> = out.ranked.iter().map(|r| r.candidate.id as usize).collect();
+    let spent: u32 = out.ranked.iter().map(|r| r.candidate.tokens).sum();
+    assert!(spent <= 20, "{spent} 토큰을 썼다");
+
+    let got = value(&docs, &ids, true);
+    let best = brute_force_knapsack(&docs, 20, true);
+    assert!(
+        got >= best * GUARANTEE_KNAPSACK_SUBMODULAR,
+        "탐욕 {got} 가 최적 {best} 의 {GUARANTEE_KNAPSACK_SUBMODULAR} 배에 못 미친다"
+    );
+}
+
+/// 모듈러 + 배낭형도 같은 방식으로 잰다. 이쪽은 계수가 1/2 다.
+#[test]
+fn the_modular_knapsack_guarantee_holds_too() {
+    let mut docs = small();
+    for (i, d) in docs.iter_mut().enumerate() {
+        d.tokens = 1 + (i as u32 * 5) % 11;
+    }
+
+    let out = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .fuse(Fusion::weighted_sum())
+        .budget(Budget::Tokens { max: 18 })
+        .cost(|d: &Doc| d.tokens)
+        .pool_multiplier(4)
+        .run(docs.clone())
+        .unwrap();
+
+    assert_eq!(out.selection.guarantee, Some(GUARANTEE_KNAPSACK_MODULAR));
+
+    let ids: Vec<usize> = out.ranked.iter().map(|r| r.candidate.id as usize).collect();
+    let got = value(&docs, &ids, false);
+    let best = brute_force_knapsack(&docs, 18, false);
+    assert!(
+        got >= best * GUARANTEE_KNAPSACK_MODULAR,
+        "탐욕 {got}, 최적 {best}"
+    );
+}
+
+/// 단위비용 탐욕 갈래가 실제로 일을 한다.
+///
+/// 비율 탐욕은 값이 작고 싼 것을 먼저 담아 예산을 소진하고, 값이 큰 것을 못 넣는 경우가
+/// 있다. 그 갈래를 더한 이유가 이것이다.
+#[test]
+fn the_unit_cost_branch_can_win() {
+    // 비율은 낮지만 값이 큰 하나와, 비율은 높지만 값이 작은 여럿.
+    let mut docs: Vec<Doc> = (0..6)
+        .map(|id| Doc {
+            id,
+            relevance: Some(0.30),
+            tokens: 2,
+            ..Doc::default()
+        })
+        .collect();
+    // 식별자를 색인과 맞춰 둔다. value 와 brute_force 가 색인으로 읽기 때문이다.
+    docs.push(Doc {
+        id: 6,
+        relevance: Some(1.60),
+        tokens: 10,
+        ..Doc::default()
+    });
+
+    let out = Engine::new()
+        .scorer(Unit("relevance", relevance))
+        .fuse(Fusion::weighted_sum())
+        .budget(Budget::Tokens { max: 10 })
+        .cost(|d: &Doc| d.tokens)
+        .pool_multiplier(4)
+        .run(docs.clone())
+        .unwrap();
+
+    let ids: Vec<usize> = out.ranked.iter().map(|r| r.candidate.id as usize).collect();
+    let got = value(&docs, &ids, false);
+    let best = brute_force_knapsack(&docs, 10, false);
+    assert!((got - best).abs() < 1e-5, "탐욕 {got}, 최적 {best}");
 }

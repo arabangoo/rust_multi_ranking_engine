@@ -111,12 +111,23 @@
 //!
 //! # 참고 자료
 //!
+//! 실제로 근거로 쓴 것만 싣는다. 결과에 실려 나가는 보장 계수는 여기까지 되짚을 수 있다.
+//!
 //! 1. G. L. Nemhauser, L. A. Wolsey, M. L. Fisher, An analysis of approximations for
-//!    maximizing submodular set functions (1978)
-//! 2. G. V. Cormack et al., Reciprocal Rank Fusion outperforms Condorcet and individual
-//!    Rank Learning Methods, SIGIR 2009
-//! 3. A. Clauset, C. R. Shalizi, M. E. J. Newman, Power-law distributions in empirical
-//!    data (2009)
+//!    maximizing submodular set functions I (1978).
+//!    [`GUARANTEE_CARDINALITY`] = `1 - 1/e`. 서브모듈러 + 개수 제한
+//! 2. M. L. Fisher, G. L. Nemhauser, L. A. Wolsey, An analysis of approximations for
+//!    maximizing submodular set functions II (1978).
+//!    [`GUARANTEE_MATROID`] = `1/2`. 서브모듈러 + 매트로이드
+//! 3. J. Leskovec et al., Cost-effective outbreak detection in networks, KDD 2007.
+//!    [`GUARANTEE_KNAPSACK_SUBMODULAR`] = `(1 - 1/e)/2`. 서브모듈러 + 배낭형
+//! 4. G. V. Cormack et al., Reciprocal Rank Fusion outperforms Condorcet and individual
+//!    Rank Learning Methods, SIGIR 2009. [`Fusion::Rrf`] 와 관례 상수 `k = 60`
+//! 5. A. Clauset, C. R. Shalizi, M. E. J. Newman, Power-law distributions in empirical
+//!    data (2009). [`Budget::TailMass`] 의 적합도 검정
+//!
+//! [`GUARANTEE_KNAPSACK_MODULAR`] = `1/2` 만 예외다. 비율 탐욕과 최고가 단일 항목 중
+//! 나은 쪽(ModifiedGreedy)의 표준 결과라 특정 논문 하나로 귀속시키지 않았다.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

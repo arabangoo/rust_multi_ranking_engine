@@ -19,13 +19,26 @@ use crate::fuse::FusionTrace;
 use crate::objective::SetObjective;
 
 /// 서브모듈러 목적함수에 개수 제한만 걸렸을 때의 탐욕 보장 계수. `1 - 1/e`.
+///
+/// Nemhauser, Wolsey, Fisher (1978) 의 고전 결과다. **개수 제한에서만 성립한다.**
 pub const GUARANTEE_CARDINALITY: f32 = 0.632_120_56;
-/// 서브모듈러 목적함수에 매트로이드 하나가 걸렸을 때의 탐욕 보장 계수.
+/// 서브모듈러 목적함수에 매트로이드 하나가 걸렸을 때의 탐욕 보장 계수. `1/2`.
+///
+/// Fisher, Nemhauser, Wolsey (1978, 두 번째 논문) 의 결과다. 개수 제한의 `1 - 1/e` 를
+/// 일반 매트로이드로 그대로 옮길 수 없다는 것이 이 값의 뜻이다.
 pub const GUARANTEE_MATROID: f32 = 0.5;
 /// 모듈러 목적함수에 배낭형 하나가 걸렸을 때의 탐욕 보장 계수.
+///
+/// 비율 탐욕과 단일 최고 항목 중 나은 쪽(ModifiedGreedy)의 고전적 결과다.
 pub const GUARANTEE_KNAPSACK_MODULAR: f32 = 0.5;
-/// 서브모듈러 목적함수에 배낭형 하나가 걸렸을 때의 탐욕 보장 계수. `1 - e^(-1/2)`.
-pub const GUARANTEE_KNAPSACK_SUBMODULAR: f32 = 0.393_469_34;
+/// 서브모듈러 목적함수에 배낭형 하나가 걸렸을 때의 탐욕 보장 계수. `(1 - 1/e)/2`.
+///
+/// 비율 탐욕과 단위비용 탐욕 중 나은 쪽의 보장이다(Leskovec et al. 2007).
+///
+/// **`1 - 1/e` 가 아니다.** 그 값은 크기 3 부분집합을 전부 열거하고 그 위에 비용 대비
+/// 이득 탐욕을 얹는 훨씬 비싼 알고리즘의 것이고(Sviridenko 2004) 이 엔진은 그것을
+/// 돌리지 않는다. 실제로 돌리는 알고리즘의 보장만 결과에 싣는다.
+pub const GUARANTEE_KNAPSACK_SUBMODULAR: f32 = 0.316_060_28;
 
 /// 1단계 유계 힙에 들어가는 자리 하나.
 ///
@@ -228,72 +241,37 @@ impl<'a, C> Selector<'a, C> {
 
     /// 배낭형 예산 아래의 탐욕.
     ///
-    /// 비용 대비 이득으로 고른 집합과 단일 최고 항목을 비교해 나은 쪽을 쓴다. 이
-    /// 두 갈래 비교가 보장 계수의 근거다 -- 비율 탐욕만 쓰면 값이 아주 큰 단일 항목을
-    /// 통째로 놓치는 경우가 있어 계수가 성립하지 않는다.
+    /// 세 갈래를 만들어 값이 가장 큰 것을 쓴다.
+    ///
+    /// 1. **비용 대비 이득 탐욕.** 이득을 비용으로 나눈 값이 큰 것부터 담는다
+    /// 2. **단위비용 탐욕.** 비용을 무시하고 이득만 보고 담는다
+    /// 3. **단일 최고 항목.** 혼자 예산에 들어가는 것 중 이득이 가장 큰 하나
+    ///
+    /// # 왜 셋인가
+    ///
+    /// 보장 계수가 인용 가능해지려면 알고리즘이 정리의 모양과 같아야 한다.
+    ///
+    /// - **모듈러**일 때는 1번과 3번의 최댓값이 `1/2` 를 보장한다(ModifiedGreedy).
+    ///   비율 탐욕만 쓰면 값이 아주 큰 단일 항목을 통째로 놓쳐 계수가 성립하지 않는다.
+    /// - **서브모듈러**일 때는 1번과 2번의 최댓값이 `(1 - 1/e)/2` 를 보장한다
+    ///   (Leskovec et al. 2007). `1 - 1/e` 는 크기 3 부분집합을 전부 열거하고 그 위에
+    ///   비용 대비 이득 탐욕을 얹는 훨씬 비싼 알고리즘의 것이라(Sviridenko 2004)
+    ///   여기서 쓸 수 없다.
+    ///
+    /// 셋의 최댓값은 어느 둘의 최댓값보다도 크거나 같으므로 두 보장이 함께 성립한다.
     fn knapsack(&self, pool: &[PoolEntry<C>]) -> Result<Chosen> {
         let limit = self.token_budget.unwrap_or(u32::MAX) as u64;
-        let cost_of = |c: &C| -> u64 {
-            match self.cost {
-                Some(f) => f(c) as u64,
-                None => 0,
-            }
-        };
 
-        // 갈래 1: 비용 대비 이득 탐욕.
-        let mut selected: Vec<usize> = Vec::new();
-        let mut taken = vec![false; pool.len()];
-        let mut spent: u64 = 0;
-        let mut value_ratio = 0.0f32;
-        // 이 반복문은 더 담을 것이 없을 때만 빠져나가므로 그 자리에서 값이 정해진다.
-        let exhausted: bool;
+        // 갈래 1과 2. 무엇으로 정렬하느냐만 다르다.
+        let (by_ratio, value_ratio, exhausted) = self.greedy_pack(pool, limit, true);
+        let (by_gain, value_gain, _) = self.greedy_pack(pool, limit, false);
 
-        loop {
-            let refs = self.refs(pool, &selected);
-            let mut best: Option<(usize, f32, f32, u64)> = None;
-
-            for (i, entry) in pool.iter().enumerate() {
-                if taken[i] {
-                    continue;
-                }
-                let cost = cost_of(&entry.candidate);
-                if spent + cost > limit || !self.admits_all(&refs, &entry.candidate) {
-                    continue;
-                }
-                let gain = self.gain(&refs, entry);
-                // 비용 0 인 후보는 공짜이므로 언제나 먼저 담는다.
-                let ratio = if cost == 0 {
-                    f32::INFINITY
-                } else {
-                    gain / cost as f32
-                };
-                match best {
-                    Some((_, b, _, _)) if ratio <= b => {}
-                    _ => best = Some((i, ratio, gain, cost)),
-                }
-            }
-
-            match best {
-                Some((i, _, gain, cost)) => {
-                    taken[i] = true;
-                    selected.push(i);
-                    spent += cost;
-                    value_ratio += gain;
-                }
-                None => {
-                    // 배낭형에는 채워야 할 K 가 없다. 예산이 남았는데 더 담을 것이
-                    // 없을 때만 풀이 모자랐다고 본다.
-                    exhausted = selected.len() == pool.len();
-                    break;
-                }
-            }
-        }
-
-        // 갈래 2: 단일 최고 항목.
+        // 갈래 3: 단일 최고 항목.
         let empty: Vec<&C> = Vec::new();
         let mut single: Option<(usize, f32)> = None;
         for (i, entry) in pool.iter().enumerate() {
-            if cost_of(&entry.candidate) > limit || !self.admits_all(&empty, &entry.candidate) {
+            if self.cost_of(&entry.candidate) > limit || !self.admits_all(&empty, &entry.candidate)
+            {
                 continue;
             }
             let gain = self.gain(&empty, entry);
@@ -303,27 +281,97 @@ impl<'a, C> Selector<'a, C> {
             }
         }
 
+        let mut best_set = by_ratio;
+        let mut best_value = value_ratio;
+        let mut is_single = false;
+
+        if value_gain > best_value {
+            best_set = by_gain;
+            best_value = value_gain;
+        }
         if let Some((i, gain)) = single {
-            if gain > value_ratio {
-                return Ok(Chosen {
-                    selected: vec![i],
-                    blocked_by: Vec::new(),
-                    pool_exhausted: exhausted,
-                    repaired: false,
-                    // 단일 최고 항목이 이겼으면 절단선이라 부를 자리가 없다.
-                    // 마지막 자리를 다툰 사건 자체가 일어나지 않았다.
-                    cut_margin: Some(f32::NAN),
-                });
+            if gain > best_value {
+                best_set = vec![i];
+                is_single = true;
             }
         }
 
         Ok(Chosen {
-            selected,
+            selected: best_set,
             blocked_by: Vec::new(),
             pool_exhausted: exhausted,
             repaired: false,
-            cut_margin: None,
+            // 단일 최고 항목이 이겼으면 절단선이라 부를 자리가 없다.
+            // 마지막 자리를 다툰 사건 자체가 일어나지 않았다.
+            cut_margin: if is_single { Some(f32::NAN) } else { None },
         })
+    }
+
+    /// 예산 안에서 한 갈래를 채운다.
+    ///
+    /// `by_ratio` 가 참이면 비용 대비 이득으로, 거짓이면 이득만으로 다음 후보를 고른다.
+    /// 돌려주는 셋째 값은 예산이 남았는데 더 담을 것이 없었는가다.
+    fn greedy_pack(
+        &self,
+        pool: &[PoolEntry<C>],
+        limit: u64,
+        by_ratio: bool,
+    ) -> (Vec<usize>, f32, bool) {
+        let mut selected: Vec<usize> = Vec::new();
+        let mut taken = vec![false; pool.len()];
+        let mut spent: u64 = 0;
+        let mut value = 0.0f32;
+
+        loop {
+            let refs = self.refs(pool, &selected);
+            let mut best: Option<(usize, f32, f32, u64)> = None;
+
+            for (i, entry) in pool.iter().enumerate() {
+                if taken[i] {
+                    continue;
+                }
+                let cost = self.cost_of(&entry.candidate);
+                if spent + cost > limit || !self.admits_all(&refs, &entry.candidate) {
+                    continue;
+                }
+                let gain = self.gain(&refs, entry);
+                let key = if !by_ratio {
+                    gain
+                } else if cost == 0 {
+                    // 비용 0 인 후보는 공짜이므로 언제나 먼저 담는다.
+                    f32::INFINITY
+                } else {
+                    gain / cost as f32
+                };
+                match best {
+                    Some((_, b, _, _)) if key <= b => {}
+                    _ => best = Some((i, key, gain, cost)),
+                }
+            }
+
+            match best {
+                Some((i, _, gain, cost)) => {
+                    taken[i] = true;
+                    selected.push(i);
+                    spent += cost;
+                    value += gain;
+                }
+                None => {
+                    // 배낭형에는 채워야 할 K 가 없다. 예산이 남았는데 더 담을 것이
+                    // 없을 때만 풀이 모자랐다고 본다.
+                    let exhausted = selected.len() == pool.len();
+                    return (selected, value, exhausted);
+                }
+            }
+        }
+    }
+
+    /// 후보 하나의 비용. 비용 함수가 없으면 0 이다.
+    fn cost_of(&self, c: &C) -> u64 {
+        match self.cost {
+            Some(f) => f(c) as u64,
+            None => 0,
+        }
     }
 
     /// 요구 조건을 교체로 채운다. 채우려고 무엇이든 바꿨으면 참을 돌려준다.

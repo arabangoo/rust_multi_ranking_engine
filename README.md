@@ -15,12 +15,20 @@
 | 기본 빌드 의존성 | `thiserror` 하나. 외부 함수 인터페이스(FFI) 0, 모델 0, 네트워크 0 |
 | Python | PyO3 abi3 확장 모듈. 3.9 이상에서 휠 하나 |
 
-핵심 참고 자료는 셋이다. 첫 번째가 제약 아래 선택의 근거이고, 두 번째가 점수 융합의
-근거이며, 세 번째는 적응형 예산에 반드시 붙여야 하는 안전장치의 근거다.
+참고 자료는 **실제로 근거로 쓴 것만** 싣는다. 각 항목이 코드의 어느 값을 뒷받침하는지
+함께 적었다. 결과에 실려 나가는 숫자는 여기까지 되짚을 수 있어야 한다.
 
-1. G. L. Nemhauser, L. A. Wolsey, M. L. Fisher, [An analysis of approximations for maximizing submodular set functions](https://link.springer.com/article/10.1007/BF01588971) (1978). 서브모듈러 목적함수에서 탐욕 선택이 `1 - 1/e` 를 보장한다는 고전 결과
-2. G. V. Cormack et al., [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), SIGIR 2009
-3. A. Clauset, C. R. Shalizi, M. E. J. Newman, [Power-law distributions in empirical data](https://arxiv.org/abs/0706.1062) (2009). 멱법칙 적합이 왜 틀리기 쉬운지, 적합도 검정이 왜 필요한지
+| 자료 | 뒷받침하는 것 |
+| --- | --- |
+| G. L. Nemhauser, L. A. Wolsey, M. L. Fisher, [An analysis of approximations for maximizing submodular set functions I](https://link.springer.com/article/10.1007/BF01588971) (1978) | `GUARANTEE_CARDINALITY` = `1 - 1/e`. 서브모듈러 + **개수 제한** |
+| M. L. Fisher, G. L. Nemhauser, L. A. Wolsey, [An analysis of approximations for maximizing submodular set functions II](https://link.springer.com/chapter/10.1007/BFb0121195) (1978) | `GUARANTEE_MATROID` = `1/2`. 서브모듈러 + **매트로이드** |
+| J. Leskovec, A. Krause, C. Guestrin, C. Faloutsos, J. VanBriesen, N. Glance, [Cost-effective outbreak detection in networks](https://dl.acm.org/doi/10.1145/1281192.1281239), KDD 2007 | `GUARANTEE_KNAPSACK_SUBMODULAR` = `(1 - 1/e)/2`. 서브모듈러 + **배낭형** |
+| G. V. Cormack, C. L. A. Clarke, S. Buettcher, [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), SIGIR 2009 | `Fusion::Rrf` 와 관례 상수 `k = 60` |
+| A. Clauset, C. R. Shalizi, M. E. J. Newman, [Power-law distributions in empirical data](https://arxiv.org/abs/0706.1062) (2009) | `Budget::TailMass` 가 로그-로그 회귀 대신 최대가능도와 콜모고로프-스미르노프 거리를 쓰는 이유 |
+
+`GUARANTEE_KNAPSACK_MODULAR` = `1/2` 은 예외다. 비율 탐욕과 최고가 단일 항목 중 나은
+쪽(ModifiedGreedy)이 `1/2` 를 준다는 것은 근사 알고리즘 교과서의 표준 결과라 특정 논문
+하나로 귀속시키지 않았다.
 
 ---
 
@@ -660,9 +668,14 @@ pub trait SetObjective<C>: Sync {
 | 서브모듈러 | 개수 제한만 | `1 - 1/e` (약 0.632) | `GUARANTEE_CARDINALITY` |
 | 서브모듈러 | 매트로이드 1개 | `0.5` | `GUARANTEE_MATROID` |
 | 서브모듈러 | 매트로이드 `p` 개 | `1/(p+1)` | |
-| 서브모듈러 | 배낭형 1개 | `1 - e^(-1/2)` (약 0.393) | `GUARANTEE_KNAPSACK_SUBMODULAR` |
+| 서브모듈러 | 배낭형 1개 | `(1 - 1/e)/2` (약 0.316) | `GUARANTEE_KNAPSACK_SUBMODULAR` |
 
 **`1 - 1/e` 는 개수 제한에서만 성립한다.** 일반 매트로이드에서는 `1/2` 로 내려간다.
+
+**배낭형에서도 `1 - 1/e` 를 쓰지 않는다.** 그 값은 크기 3 부분집합을 전부 열거하고 그
+위에 비용 대비 이득 탐욕을 얹는 훨씬 비싼 알고리즘의 보장이다. 이 엔진은 그것을 돌리지
+않고 세 갈래 탐욕(비율 · 단위비용 · 단일 최고 항목)의 최댓값을 쓰므로 `(1 - 1/e)/2` 다.
+**실제로 돌리는 알고리즘의 보장만 결과에 싣는다.**
 
 **위 표에 없는 조합에는 계수를 주지 않는다.** 비매트로이드 제약이 둘 이상이거나, 매트로이드와
 배낭형이 섞였거나, 서브모듈러라고 선언되지 않은 목적함수가 걸렸을 때다. 근거 없는 숫자를
@@ -733,9 +746,17 @@ pub struct BudgetTrace {
 
 ### 배낭형 예산
 
-`Budget::Tokens` 는 `Engine::cost` 로 후보별 비용을 함께 받는다. 비용 대비 이득으로 고른
-집합과 단일 최고 항목을 비교해 나은 쪽을 쓴다. 이 두 갈래 비교가 보장 계수의 근거다.
-비율 탐욕만 쓰면 값이 아주 큰 단일 항목을 통째로 놓치는 경우가 있어 계수가 성립하지 않는다.
+`Budget::Tokens` 는 `Engine::cost` 로 후보별 비용을 함께 받는다. 세 갈래를 만들어 값이
+가장 큰 것을 쓴다.
+
+1. **비용 대비 이득 탐욕.** 이득을 비용으로 나눈 값이 큰 것부터 담는다
+2. **단위비용 탐욕.** 비용을 무시하고 이득만 보고 담는다
+3. **단일 최고 항목.** 혼자 예산에 들어가는 것 중 이득이 가장 큰 하나
+
+갈래가 셋인 이유는 **보장 계수가 인용 가능해지려면 알고리즘이 정리의 모양과 같아야 하기
+때문**이다. 모듈러의 `1/2` 는 1번과 3번의 최댓값에 붙고, 서브모듈러의 `(1 - 1/e)/2` 는
+1번과 2번의 최댓값에 붙는다. 셋의 최댓값은 어느 둘의 최댓값보다도 크거나 같으므로 두
+보장이 함께 성립한다.
 
 ---
 
