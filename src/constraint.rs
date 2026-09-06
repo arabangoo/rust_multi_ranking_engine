@@ -83,8 +83,9 @@ pub trait SetConstraint<C>: Sync {
 ///
 /// 하한은 탐욕이 끝난 뒤 **교체**로 채운다. 조건을 만족하는 미선택 후보 중 가장 점수가
 /// 높은 것을, 조건을 만족하지 않는 선택된 후보 중 가장 점수가 낮은 것과 바꾼다.
-/// 이 교체는 탐욕의 최적성을 깨므로 요구 조건이 하나라도 있으면
-/// [`Selection::exact`](crate::Selection::exact) 는 거짓이 된다.
+/// 앞서 충족한 하한을 보존하고 최종 집합의 모든 하한을 재검사한다.
+/// 단일 교체로 찾지 못하면 오류를 반환하며, 해가 없음을 증명하지는 않는다.
+/// 실제 교체가 일어나면 [`Selection::exact`](crate::Selection::exact) 는 거짓이 된다.
 pub struct Requirement<C> {
     id: ConstraintId,
     predicate: Box<dyn Fn(&C) -> bool + Sync>,

@@ -382,7 +382,7 @@ impl<'a, C> Selector<'a, C> {
     ) -> Result<bool> {
         let mut repaired = false;
 
-        for req in self.requirements {
+        for (req_index, req) in self.requirements.iter().enumerate() {
             loop {
                 let have = selected
                     .iter()
@@ -426,7 +426,9 @@ impl<'a, C> Selector<'a, C> {
                     if room {
                         let mut trial = selected.clone();
                         trial.push(*donor);
-                        if self.set_is_feasible(pool, &trial) {
+                        if self.set_is_feasible(pool, &trial)
+                            && self.requirements_met(pool, &trial, req_index)
+                        {
                             *selected = trial;
                             repaired = true;
                             done = true;
@@ -437,7 +439,9 @@ impl<'a, C> Selector<'a, C> {
                         let mut trial: Vec<usize> =
                             selected.iter().copied().filter(|i| i != victim).collect();
                         trial.push(*donor);
-                        if self.set_is_feasible(pool, &trial) {
+                        if self.set_is_feasible(pool, &trial)
+                            && self.requirements_met(pool, &trial, req_index)
+                        {
                             *selected = trial;
                             repaired = true;
                             done = true;
@@ -459,7 +463,34 @@ impl<'a, C> Selector<'a, C> {
             }
         }
 
+        // 교체가 끝난 집합을 다시 확인한다. 성공은 모든 하한의 충족을 뜻한다.
+        for req in self.requirements {
+            let have = selected
+                .iter()
+                .filter(|&&i| req.satisfied_by(&pool[i].candidate))
+                .count();
+            if have < req.needed() {
+                return Err(Error::InfeasibleRequirement {
+                    id: req.id().to_string(),
+                    needed: req.needed(),
+                    available: pool
+                        .iter()
+                        .filter(|e| req.satisfied_by(&e.candidate))
+                        .count(),
+                });
+            }
+        }
         Ok(repaired)
+    }
+
+    /// 앞서 충족한 하한을 이후 교체가 깨뜨리지 않도록 보호한다.
+    fn requirements_met(&self, pool: &[PoolEntry<C>], set: &[usize], count: usize) -> bool {
+        self.requirements[..count].iter().all(|req| {
+            set.iter()
+                .filter(|&&i| req.satisfied_by(&pool[i].candidate))
+                .count()
+                >= req.needed()
+        })
     }
 
     /// 집합 전체가 제약을 지키는가. 원소 하나씩 빼고 나머지에 대해 물어본다.
@@ -618,11 +649,13 @@ pub(crate) fn guarantee_of(
     if repaired {
         return (false, None);
     }
-    if structure == Structure::Unknown {
+    // 임의의 비매트로이드 제약은 배낭형이라는 뜻이 아니다. CostBudget도
+    // 일반 제약으로 등록되면 배낭 전용 알고리즘을 타지 않으므로 보장하지 않는다.
+    if structure == Structure::Unknown || non_matroids > 0 {
         return (false, None);
     }
 
-    let q = non_matroids + usize::from(knapsack_budget);
+    let q = usize::from(knapsack_budget);
     let p = matroids;
 
     match (structure, q, p) {

@@ -701,12 +701,20 @@ impl<C: Candidate + Sync> Engine<C> {
                 }
                 let start = Instant::now();
                 let scorer = &self.scorers[i];
-                let chunks: Vec<Vec<Option<f32>>> = refs
+                let chunks: Vec<Result<Vec<Option<f32>>>> = refs
                     .par_chunks(chunk)
-                    .map(|part| scorer.score_batch(part))
+                    .map(|part| {
+                        let values = scorer.score_batch(part);
+                        self.check_batch(&m.id, part.len(), values.len())?;
+                        Ok(values)
+                    })
                     .collect();
-                let values: Vec<Option<f32>> = chunks.into_iter().flatten().collect();
-                self.check_batch(&m.id, refs.len(), values.len())?;
+                // 오류도 입력 덩어리 순서로 확인한다. 길이 오차가 서로 상쇄되어
+                // 다른 후보에게 점수가 붙는 것을 전체 길이 검사만으로는 막지 못한다.
+                let mut values = Vec::with_capacity(refs.len());
+                for part in chunks {
+                    values.extend(part?);
+                }
                 collected.push((i, values, start.elapsed().as_nanos()));
             }
         }

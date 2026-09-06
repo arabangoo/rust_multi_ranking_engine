@@ -216,6 +216,14 @@ impl<C, S: Scorer<C>> Scorer<C> for Normalized<S> {
     fn score(&self, c: &C) -> Option<f32> {
         self.inner.score(c).map(|v| self.normalizer.apply(v))
     }
+
+    fn score_batch(&self, candidates: &[&C]) -> Vec<Option<f32>> {
+        self.inner
+            .score_batch(candidates)
+            .into_iter()
+            .map(|v| v.map(|x| self.normalizer.apply(x)))
+            .collect()
+    }
 }
 
 /// 채점기에 붙는 편의 메서드.

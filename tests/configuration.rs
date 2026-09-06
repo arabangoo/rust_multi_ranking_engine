@@ -290,12 +290,12 @@ fn the_trace_shows_the_cascade_actually_saved_calls() {
 
 // ── 배치 채점 ─────────────────────────────────────────────────────
 
-/// 비싼 축은 배치로 넘어간다. 하나씩 960번이 아니라 한 번에 풀 전체다.
+/// 비싼 축은 축소된 풀을 배치로 받는다. 병렬 빌드는 풀을 나눠 전달한다.
 ///
 /// 이것이 파이썬 콜백이 쓰는 경로이고, 교차 인코더 같은 배치 추론 모델이 실제로
 /// 원하는 모양이다.
 #[test]
-fn an_expensive_axis_is_handed_the_whole_pool_at_once() {
+fn an_expensive_axis_receives_only_the_pool_in_batches() {
     use std::sync::atomic::Ordering;
 
     let scorer = std::sync::Arc::new(Batched::new("cross_encoder"));
@@ -329,12 +329,19 @@ fn an_expensive_axis_is_handed_the_whole_pool_at_once() {
         .run(corpus(9, 1000))
         .unwrap();
 
-    // 풀은 16 개. 배치가 한 번에 16 개를 받아야 한다.
+    // 풀은 16개다. 직렬은 전체 풀, 병렬은 스레드 수에 맞춘 덩어리를 받는다.
     assert_eq!(out.trace.pool_capacity, 16);
-    assert_eq!(handle.widest.load(Ordering::SeqCst), 16);
+    #[cfg(not(feature = "parallel"))]
+    let width = 16;
+    #[cfg(feature = "parallel")]
+    let width = {
+        let threads = rayon::current_num_threads().max(1);
+        ((16 + threads - 1) / threads).max(1)
+    };
+    assert_eq!(handle.widest.load(Ordering::SeqCst), width);
     // 직렬 빌드는 한 번, 병렬 빌드는 덩어리 수만큼 부른다. 어느 쪽이든 1,000 번이 아니다.
     let calls = handle.calls.load(Ordering::SeqCst);
-    assert!((1..=16).contains(&calls), "배치 호출 {calls} 회");
+    assert_eq!(calls, (16 + width - 1) / width);
     assert_eq!(out.trace.scorers[1].calls, 16, "기록에는 후보 수로 남는다");
 }
 

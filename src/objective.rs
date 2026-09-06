@@ -54,7 +54,7 @@ pub trait SetObjective<C>: Sync {
     /// 서브모듈러인가. 참이면 탐욕에 보장 계수가 붙는다.
     ///
     /// 개수 제한만 있으면 `1 - 1/e`(약 0.632), 매트로이드 하나가 걸리면 `1/2`,
-    /// 배낭형이 걸리면 `1 - e^(-1/2)`(약 0.393)다. 자세한 표는
+    /// 추가 집합 제약 없이 `Budget::Tokens`를 쓰면 `(1 - 1/e)/2`(약 0.316)다. 자세한 표는
     /// [`Selection::guarantee`](crate::Selection::guarantee) 문서에 있다.
     fn is_submodular(&self) -> bool;
 }
